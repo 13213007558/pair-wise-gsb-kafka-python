@@ -58,7 +58,7 @@ import struct
 import time
 from kafka.record.abc import ABCRecord, ABCRecordBatch, ABCRecordBatchBuilder
 from kafka.record.util import (
-    decode_varint, encode_varint, calc_crc32c, size_of_varint
+    encode_varint, calc_crc32c, size_of_varint
 )
 from kafka.errors import CorruptRecordError, UnsupportedCodecError
 from kafka.codec import (
@@ -249,9 +249,7 @@ class DefaultRecordBatch(DefaultRecordBase, ABCRecordBatch):
                 self._pos = 0
         self._decompressed = True
 
-    def _read_msg(
-            self,
-            decode_varint=decode_varint):
+    def _read_msg(self):
         # Record =>
         #   Length => Varint
         #   Attributes => Int8
@@ -265,65 +263,118 @@ class DefaultRecordBatch(DefaultRecordBase, ABCRecordBatch):
 
         buffer = self._buffer
         pos = self._pos
-        length, pos = decode_varint(buffer, pos)
-        start_pos = pos
-        _, pos = decode_varint(buffer, pos)  # attrs can be skipped for now
+        base_offset = self.base_offset
+        record_index = self._next_record_index
 
-        ts_delta, pos = decode_varint(buffer, pos)
+        def _corrupt(reason):
+            return CorruptRecordError(
+                "Corrupt record in batch (base_offset={}) at record index "
+                "{}: {}".format(base_offset, record_index, reason))
+
+        def _read_varint(pos, limit, what):
+            # Every varint must terminate within [pos, limit), so a field
+            # of the current record can never consume bytes that belong to
+            # the next record.
+            start = pos
+            result = 0
+            shift = 0
+            while True:
+                if pos >= limit:
+                    raise _corrupt(
+                        "truncated varint for {} at buffer offset "
+                        "{}".format(what, start))
+                byte = buffer[pos]
+                pos += 1
+                result |= (byte & 0x7f) << shift
+                if not (byte & 0x80):
+                    break
+                shift += 7
+                if shift >= 64:
+                    raise _corrupt(
+                        "varint for {} out of int64 range at buffer offset "
+                        "{}".format(what, start))
+            return ((result >> 1) ^ -(result & 1)), pos
+
+        def _read_bytes(pos, limit, length, what, nullable):
+            # Only the protocol-defined null (-1) is accepted for nullable
+            # fields; any other negative length is corruption.
+            if length < 0:
+                if nullable and length == -1:
+                    return None, pos
+                raise _corrupt(
+                    "invalid negative length {} for {}".format(length, what))
+            end = pos + length
+            if end > limit:
+                raise _corrupt(
+                    "declared length {} for {} at buffer offset {} crosses "
+                    "the record boundary ({} bytes remaining)".format(
+                        length, what, pos, limit - pos))
+            return bytes(buffer[pos: end]), end
+
+        buf_len = len(buffer)
+        length, pos = _read_varint(pos, buf_len, "record length")
+        if length < 0:
+            raise _corrupt("invalid negative record length {}".format(length))
+        record_end = pos + length
+        if record_end > buf_len:
+            raise _corrupt(
+                "record length {} exceeds the {} remaining buffer "
+                "bytes".format(length, buf_len - pos))
+
+        # Attributes => Int8, unused for now
+        if pos >= record_end:
+            raise _corrupt(
+                "truncated attributes at buffer offset {}".format(pos))
+        pos += 1
+
+        ts_delta, pos = _read_varint(pos, record_end, "timestamp delta")
         if self.timestamp_type == self.LOG_APPEND_TIME:
             timestamp = self.max_timestamp
         else:
             timestamp = self.first_timestamp + ts_delta
 
-        offset_delta, pos = decode_varint(buffer, pos)
-        offset = self.base_offset + offset_delta
+        offset_delta, pos = _read_varint(pos, record_end, "offset delta")
+        offset = base_offset + offset_delta
 
-        key_len, pos = decode_varint(buffer, pos)
-        if key_len >= 0:
-            key = bytes(buffer[pos: pos + key_len])
-            pos += key_len
-        else:
-            key = None
+        key_len, pos = _read_varint(pos, record_end, "key length")
+        key, pos = _read_bytes(pos, record_end, key_len, "key", nullable=True)
 
-        value_len, pos = decode_varint(buffer, pos)
-        if value_len >= 0:
-            value = bytes(buffer[pos: pos + value_len])
-            pos += value_len
-        else:
-            value = None
+        value_len, pos = _read_varint(pos, record_end, "value length")
+        value, pos = _read_bytes(
+            pos, record_end, value_len, "value", nullable=True)
 
-        header_count, pos = decode_varint(buffer, pos)
+        header_count, pos = _read_varint(pos, record_end, "header count")
         if header_count < 0:
-            raise CorruptRecordError("Found invalid number of record "
-                                         "headers {}".format(header_count))
+            raise _corrupt(
+                "invalid negative header count {}".format(header_count))
         headers = []
         while header_count:
             # Header key is of type String, that can't be None
-            h_key_len, pos = decode_varint(buffer, pos)
-            if h_key_len < 0:
-                raise CorruptRecordError(
-                    "Invalid negative header key size {}".format(h_key_len))
-            h_key = buffer[pos: pos + h_key_len].decode("utf-8")
-            pos += h_key_len
+            h_key_len, pos = _read_varint(pos, record_end, "header key length")
+            h_key, pos = _read_bytes(
+                pos, record_end, h_key_len, "header key", nullable=False)
+            try:
+                h_key = h_key.decode("utf-8")
+            except UnicodeDecodeError as err:
+                raise _corrupt(
+                    "invalid utf-8 header key: {!r}".format(err))
 
             # Value is of type NULLABLE_BYTES, so it can be None
-            h_value_len, pos = decode_varint(buffer, pos)
-            if h_value_len >= 0:
-                h_value = bytes(buffer[pos: pos + h_value_len])
-                pos += h_value_len
-            else:
-                h_value = None
+            h_value_len, pos = _read_varint(
+                pos, record_end, "header value length")
+            h_value, pos = _read_bytes(
+                pos, record_end, h_value_len, "header value", nullable=True)
 
             headers.append((h_key, h_value))
             header_count -= 1
 
-        # validate whether we have read all header bytes in the current record
-        if pos - start_pos != length:
-            raise CorruptRecordError(
-                "Invalid record size: expected to read {} bytes in record "
-                "payload, but instead read {}".format(length, pos - start_pos))
+        # validate whether we have read all bytes in the current record
+        if pos != record_end:
+            raise _corrupt(
+                "invalid record size: expected to read {} bytes in record "
+                "payload, but instead read {}".format(
+                    length, pos - (record_end - length)))
         self._pos = pos
-
         if self.is_control_batch:
             return ControlRecord(
                 length, offset, timestamp, self.timestamp_type, key, value, headers)
