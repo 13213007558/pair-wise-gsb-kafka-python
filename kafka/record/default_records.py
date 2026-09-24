@@ -58,7 +58,7 @@ import struct
 import time
 from kafka.record.abc import ABCRecord, ABCRecordBatch, ABCRecordBatchBuilder
 from kafka.record.util import (
-    decode_varint, encode_varint, calc_crc32c, size_of_varint
+    encode_varint, calc_crc32c, size_of_varint
 )
 from kafka.errors import CorruptRecordError, UnsupportedCodecError
 from kafka.codec import (
@@ -249,9 +249,70 @@ class DefaultRecordBatch(DefaultRecordBase, ABCRecordBatch):
                 self._pos = 0
         self._decompressed = True
 
+    def _corrupt_record_error(self, record_index, message, record_offset=None):
+        location = "batch base offset {}, record index {}".format(
+            self.base_offset, record_index)
+        if record_offset is not None:
+            location += ", record offset {}".format(record_offset)
+        return CorruptRecordError("{}: {}".format(location, message))
+
+    def _read_varint(self, buffer, pos, end, record_index, field_name,
+                     max_bytes=5, record_offset=None):
+        result = 0
+        for shift in range(0, max_bytes * 7, 7):
+            if pos >= end:
+                raise self._corrupt_record_error(
+                    record_index,
+                    "truncated {} varint at byte {}".format(field_name, pos),
+                    record_offset)
+
+            byte = buffer[pos]
+            pos += 1
+            result |= (byte & 0x7f) << shift
+
+            if not (byte & 0x80):
+                if shift == (max_bytes - 1) * 7:
+                    max_last_byte = 0x0f if max_bytes == 5 else 0x01
+                    if byte > max_last_byte:
+                        raise self._corrupt_record_error(
+                            record_index,
+                            "{} varint is outside the signed {}-bit range".format(
+                                field_name, 32 if max_bytes == 5 else 64),
+                            record_offset)
+                return (result >> 1) ^ -(result & 1), pos
+
+        raise self._corrupt_record_error(
+            record_index,
+            "{} varint is longer than {} bytes".format(field_name, max_bytes),
+            record_offset)
+
+    def _read_record_bytes(self, record, pos, end, record_index, field_name,
+                           nullable=False, record_offset=None):
+        length, pos = self._read_varint(
+            record, pos, end, record_index, field_name + " length",
+            record_offset=record_offset)
+        if length < 0:
+            if nullable and length == -1:
+                return None, pos
+            if nullable:
+                message = "invalid nullable {} length {}".format(field_name, length)
+            else:
+                message = "negative {} length {}".format(field_name, length)
+            raise self._corrupt_record_error(record_index, message, record_offset)
+
+        remaining = end - pos
+        if length > remaining:
+            raise self._corrupt_record_error(
+                record_index,
+                "{} length {} extends beyond record boundary "
+                "({} bytes remaining)".format(
+                    field_name, length, remaining),
+                record_offset)
+
+        return bytes(record[pos:pos + length]), pos + length
+
     def _read_msg(
-            self,
-            decode_varint=decode_varint):
+            self):
         # Record =>
         #   Length => Varint
         #   Attributes => Int8
@@ -264,65 +325,87 @@ class DefaultRecordBatch(DefaultRecordBase, ABCRecordBatch):
         #     HeaderValue => Bytes
 
         buffer = self._buffer
+        record_index = self._next_record_index
         pos = self._pos
-        length, pos = decode_varint(buffer, pos)
-        start_pos = pos
-        _, pos = decode_varint(buffer, pos)  # attrs can be skipped for now
+        buffer_end = len(buffer)
+        length, payload_start = self._read_varint(
+            buffer, pos, buffer_end, record_index, "record length")
+        if length < 0:
+            raise self._corrupt_record_error(
+                record_index, "negative record length {}".format(length))
 
-        ts_delta, pos = decode_varint(buffer, pos)
+        record_end = payload_start + length
+        if record_end > buffer_end:
+            raise self._corrupt_record_error(
+                record_index,
+                "record length {} extends beyond batch boundary "
+                "({} bytes remaining)".format(
+                    length, buffer_end - payload_start))
+
+        record = memoryview(buffer)[payload_start:record_end]
+        pos = 0
+        record_offset = None
+
+        if pos >= length:
+            raise self._corrupt_record_error(
+                record_index, "missing record attributes")
+        pos += 1  # Attributes => Int8
+
+        ts_delta, pos = self._read_varint(
+            record, pos, length, record_index, "timestamp delta",
+            max_bytes=10)
         if self.timestamp_type == self.LOG_APPEND_TIME:
             timestamp = self.max_timestamp
         else:
             timestamp = self.first_timestamp + ts_delta
 
-        offset_delta, pos = decode_varint(buffer, pos)
+        offset_delta, pos = self._read_varint(
+            record, pos, length, record_index, "offset delta")
         offset = self.base_offset + offset_delta
+        record_offset = offset
 
-        key_len, pos = decode_varint(buffer, pos)
-        if key_len >= 0:
-            key = bytes(buffer[pos: pos + key_len])
-            pos += key_len
-        else:
-            key = None
+        key, pos = self._read_record_bytes(
+            record, pos, length, record_index, "key", nullable=True,
+            record_offset=offset)
+        value, pos = self._read_record_bytes(
+            record, pos, length, record_index, "value", nullable=True,
+            record_offset=offset)
 
-        value_len, pos = decode_varint(buffer, pos)
-        if value_len >= 0:
-            value = bytes(buffer[pos: pos + value_len])
-            pos += value_len
-        else:
-            value = None
-
-        header_count, pos = decode_varint(buffer, pos)
+        header_count, pos = self._read_varint(
+            record, pos, length, record_index, "record header count",
+            record_offset=offset)
         if header_count < 0:
-            raise CorruptRecordError("Found invalid number of record "
-                                         "headers {}".format(header_count))
+            raise self._corrupt_record_error(
+                record_index,
+                "invalid record header count {}".format(header_count), offset)
         headers = []
         while header_count:
             # Header key is of type String, that can't be None
-            h_key_len, pos = decode_varint(buffer, pos)
-            if h_key_len < 0:
-                raise CorruptRecordError(
-                    "Invalid negative header key size {}".format(h_key_len))
-            h_key = buffer[pos: pos + h_key_len].decode("utf-8")
-            pos += h_key_len
+            h_key_bytes, pos = self._read_record_bytes(
+                record, pos, length, record_index, "header key",
+                record_offset=offset)
+            try:
+                h_key = h_key_bytes.decode("utf-8")
+            except UnicodeDecodeError as err:
+                raise self._corrupt_record_error(
+                    record_index, "invalid UTF-8 header key: {!r}".format(err),
+                    offset) from err
 
             # Value is of type NULLABLE_BYTES, so it can be None
-            h_value_len, pos = decode_varint(buffer, pos)
-            if h_value_len >= 0:
-                h_value = bytes(buffer[pos: pos + h_value_len])
-                pos += h_value_len
-            else:
-                h_value = None
+            h_value, pos = self._read_record_bytes(
+                record, pos, length, record_index, "header value",
+                nullable=True, record_offset=offset)
 
             headers.append((h_key, h_value))
             header_count -= 1
 
         # validate whether we have read all header bytes in the current record
-        if pos - start_pos != length:
-            raise CorruptRecordError(
-                "Invalid record size: expected to read {} bytes in record "
-                "payload, but instead read {}".format(length, pos - start_pos))
-        self._pos = pos
+        if pos != length:
+            raise self._corrupt_record_error(
+                record_index,
+                "invalid record size: declared {} payload bytes, consumed {}".format(
+                    length, pos), offset)
+        self._pos = record_end
 
         if self.is_control_batch:
             return ControlRecord(
@@ -336,17 +419,27 @@ class DefaultRecordBatch(DefaultRecordBase, ABCRecordBatch):
         return self
 
     def __next__(self):
+        if self._num_records < 0:
+            raise CorruptRecordError(
+                "batch base offset {}: invalid negative record count {}".format(
+                    self.base_offset, self._num_records))
         if self._next_record_index >= self._num_records:
             if self._pos != len(self._buffer):
                 raise CorruptRecordError(
-                    "{} unconsumed bytes after all records consumed".format(
+                    "batch base offset {}: {} unconsumed bytes after all "
+                    "records consumed".format(
+                        self.base_offset,
                         len(self._buffer) - self._pos))
             raise StopIteration
         try:
             msg = self._read_msg()
-        except (ValueError, IndexError) as err:
+        except CorruptRecordError:
+            raise
+        except (ValueError, IndexError, struct.error) as err:
             raise CorruptRecordError(
-                "Found invalid record structure: {!r}".format(err))
+                "batch base offset {}, record index {}: found invalid record "
+                "structure: {!r}".format(
+                    self.base_offset, self._next_record_index, err))
         else:
             self._next_record_index += 1
         return msg
