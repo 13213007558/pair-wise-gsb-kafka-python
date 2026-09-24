@@ -29,9 +29,17 @@ class StickyPartitioner(DefaultPartitioner):
     concurrent ``send()`` callers can't observe a torn read-modify-write.
     """
 
-    def __init__(self):
+    def __init__(self, random_generator=None):
+        """Create a sticky partitioner.
+
+        Arguments:
+            random_generator: An object exposing ``choice(sequence)``, such
+                as :class:`random.Random`. Defaults to the global ``random``
+                module.
+        """
         self._sticky = {}  # topic -> partition_id
         self._lock = threading.Lock()
+        self._random = random_generator if random_generator is not None else random
 
     def partition(self, topic, key, serialized_key, value, serialized_value, cluster):
         """Choose a partition for the next record.
@@ -100,10 +108,10 @@ class StickyPartitioner(DefaultPartitioner):
                 candidates = [p for p in available if p != avoid] if avoid is not None else available
                 if not candidates:
                     candidates = available
-                partition = random.choice(candidates)
+                partition = self._random.choice(candidates)
         else:
             # No partitions are currently available - pick from the full
             # set without enforcing ``!= avoid``
-            partition = random.choice(all_partitions)
+            partition = self._random.choice(all_partitions)
         self._sticky[topic] = partition
         return partition

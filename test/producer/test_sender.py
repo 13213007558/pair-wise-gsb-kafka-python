@@ -3,6 +3,7 @@
 import collections
 import io
 import math
+import random
 import threading
 import time
 from unittest.mock import call
@@ -22,6 +23,8 @@ from kafka.protocol.producer import (
 )
 from kafka.producer.transaction_manager import ProducerIdAndEpoch, TransactionManager
 from kafka.protocol.metadata import MetadataResponse
+from kafka.partitioner import StickyPartitioner
+from kafka.record import MemoryRecords
 from kafka.record.memory_records import MemoryRecordsBuilder
 from kafka.structs import TopicPartition
 
@@ -1566,7 +1569,6 @@ class TestProducerAcks:
             request = ProduceRequest.decode(request_bytes, version=api_version, header=True)
             captured['acks'] = request.acks
             received.set()
-            # No response: real broker behavior for acks=0.
             return None
 
         broker.respond_fn(ProduceRequest, on_produce)
@@ -1574,14 +1576,237 @@ class TestProducerAcks:
         producer = self._make_producer(broker, acks=0)
         try:
             future = producer.send(self._TOPIC, value=b'payload', partition=0)
-            # The future resolves locally without any broker response.
             metadata = future.get(timeout=5)
             assert future.succeeded()
             assert metadata.topic == self._TOPIC
             assert metadata.partition == 0
-            # The request really did reach the broker (the core worry:
-            # "no errors, but did it actually send?").
             assert received.wait(timeout=5)
             assert captured.get('acks') == 0
         finally:
             producer.close(timeout=2)
+
+
+class TestStickyPartitionerSender:
+    """KIP-480 coverage through records and sender-produced wire requests."""
+
+    _TOPIC = 'sticky-topic'
+    _API_VERSION = (4, 3)
+    _PARTITIONS = 4
+
+    def _metadata_topic(self, version=8):
+        Topic = MetadataResponse.MetadataResponseTopic
+        Partition = Topic.MetadataResponsePartition
+        return Topic(
+            version=version,
+            error_code=0,
+            name=self._TOPIC,
+            is_internal=False,
+            partitions=[
+                Partition(
+                    version=version,
+                    error_code=0,
+                    partition_index=partition,
+                    leader_id=0,
+                    leader_epoch=0,
+                    replica_nodes=[0],
+                    isr_nodes=[0],
+                    offline_replicas=[],
+                )
+                for partition in range(self._PARTITIONS)
+            ],
+        )
+
+    def _producer(self, broker, **configs):
+        configs.setdefault('api_version', self._API_VERSION)
+        configs.setdefault('enable_idempotence', False)
+        configs.setdefault('acks', 1)
+        configs.setdefault('linger_ms', 1000)
+        configs.setdefault('retry_backoff_ms', 10)
+        configs.setdefault('request_timeout_ms', 5000)
+        return KafkaProducer(
+            kafka_client=broker.client_factory(),
+            bootstrap_servers=['%s:%d' % (broker.host, broker.port)],
+            **configs)
+
+    def _decode_request(self, request):
+        batches = []
+        for topic_data in request.topic_data:
+            assert topic_data.name == self._TOPIC
+            for partition_data in topic_data.partition_data:
+                records = MemoryRecords(bytes(partition_data.records))
+                values = []
+                for record_batch in records:
+                    values.extend(record.value for record in record_batch)
+                batches.append((partition_data.index, values))
+        return batches
+
+    def _install_success_handler(self, broker):
+        requests = []
+        offsets = collections.defaultdict(int)
+
+        def on_produce(api_key, api_version, correlation_id, request_bytes):
+            request = ProduceRequest.decode(
+                request_bytes, version=api_version, header=True)
+            requests.append(self._decode_request(request))
+
+            topics = collections.defaultdict(list)
+            for partition, values in requests[-1]:
+                base_offset = offsets[partition]
+                offsets[partition] += len(values)
+                topics[self._TOPIC].append(
+                    _partition_response(
+                        index=partition,
+                        base_offset=base_offset,
+                    )
+                )
+            return ProduceResponse(throttle_time_ms=0, responses=[
+                ProduceResponse.TopicProduceResponse(
+                    name=topic,
+                    partition_responses=partition_responses,
+                )
+                for topic, partition_responses in topics.items()
+            ])
+
+        broker.respond_always(ProduceRequest, on_produce)
+        return requests
+
+    @pytest.mark.parametrize('compression_type', [None, 'gzip'])
+    def test_sender_batches_records_until_accumulator_batch_is_full(self, compression_type):
+        batch_size = 128
+        builder = MemoryRecordsBuilder(2, 0, batch_size)
+        records_per_batch = 0
+        while builder.append(
+                0, None, ('%06d' % records_per_batch).encode(), []) is not None:
+            records_per_batch += 1
+        builder.close()
+
+        broker = MockBroker(broker_version=self._API_VERSION)
+        broker.set_metadata(topics=[self._metadata_topic()])
+        requests = self._install_success_handler(broker)
+        record_count = records_per_batch * self._PARTITIONS
+        producer = self._producer(
+            broker,
+            partitioner=StickyPartitioner(random.Random(0)),
+            batch_size=batch_size,
+            compression_type=compression_type,
+        )
+        futures = []
+        try:
+            for index in range(record_count):
+                futures.append(producer.send(
+                    self._TOPIC, value=('%06d' % index).encode()))
+        finally:
+            producer.close(timeout=5)
+
+        for future in futures:
+            assert future.succeeded()
+
+        batches = [batch for request in requests for batch in request]
+        assert len(batches) == self._PARTITIONS
+        assert {partition for partition, _ in batches} == set(range(self._PARTITIONS))
+        batches.sort(key=lambda item: item[1][0])
+        assert [partition for partition, _ in batches] == [1, 0, 2, 3]
+        for start, (_, values) in zip(range(0, record_count, records_per_batch), batches):
+            assert len(values) == records_per_batch
+            assert values == [('%06d' % index).encode()
+                              for index in range(start, start + records_per_batch)]
+
+    def test_sender_reaches_all_available_partitions_over_long_run(self):
+        batch_size = 128
+        total_records = 100
+        broker = MockBroker(broker_version=self._API_VERSION)
+        broker.set_metadata(topics=[self._metadata_topic()])
+        requests = self._install_success_handler(broker)
+
+        producer = self._producer(
+            broker,
+            partitioner=StickyPartitioner(random.Random(0)),
+            batch_size=batch_size,
+        )
+        futures = []
+        try:
+            for index in range(total_records):
+                futures.append(producer.send(
+                    self._TOPIC, value=('%06d' % index).encode()))
+        finally:
+            producer.close(timeout=5)
+
+        for future in futures:
+            assert future.succeeded()
+
+        batches = [batch for request in requests for batch in request]
+        values_by_partition = collections.defaultdict(list)
+        partitions = set()
+        for partition, values in batches:
+            partitions.add(partition)
+            values_by_partition[partition].extend(values)
+
+        assert partitions == set(range(self._PARTITIONS))
+        assert sum(len(values) for values in values_by_partition.values()) == total_records
+        for values in values_by_partition.values():
+            assert values == sorted(values)
+
+    def test_closed_batch_retry_keeps_original_partition(self):
+        broker = MockBroker(broker_version=self._API_VERSION)
+        broker.set_metadata(topics=[self._metadata_topic()])
+        requests = []
+        partition_calls = []
+        retry_partition_calls = []
+        partitioner = StickyPartitioner(random.Random(0))
+        original_partition = 3
+
+        def partition_once(*args, **kwargs):
+            partition_calls.append(1)
+            if requests:
+                retry_partition_calls.append(1)
+            return original_partition
+
+        partitioner.partition = partition_once
+
+        def response_for_request(partition, error_code=0):
+            return ProduceResponse(throttle_time_ms=0, responses=[
+                ProduceResponse.TopicProduceResponse(
+                    name=self._TOPIC,
+                    partition_responses=[
+                        _partition_response(
+                            index=partition,
+                            error_code=error_code,
+                            base_offset=0,
+                        )
+                    ],
+                ),
+            ])
+
+        def on_produce(api_key, api_version, correlation_id, request_bytes):
+            request = ProduceRequest.decode(
+                request_bytes, version=api_version, header=True)
+            batches = self._decode_request(request)
+            requests.append(batches)
+            assert len(batches) == 1
+            partition, _ = batches[0]
+            if len(requests) == 1:
+                return response_for_request(
+                    partition,
+                    Errors.NotLeaderForPartitionError.errno,
+                )
+            return response_for_request(partition)
+
+        broker.respond_fn(ProduceRequest, on_produce)
+        broker.respond_fn(ProduceRequest, on_produce)
+
+        producer = self._producer(
+            broker,
+            partitioner=partitioner,
+            linger_ms=0,
+            max_in_flight_requests_per_connection=1,
+        )
+        try:
+            future = producer.send(self._TOPIC, value=b'v')
+            assert future.get(timeout=5).partition == original_partition
+        finally:
+            producer.close(timeout=5)
+
+        assert len(requests) == 2
+        assert [partition for request in requests for partition, _ in request] == [
+            original_partition, original_partition]
+        assert not retry_partition_calls

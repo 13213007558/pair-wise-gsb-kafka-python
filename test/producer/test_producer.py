@@ -190,6 +190,19 @@ def test_send_with_explicit_partition_skips_on_new_batch():
         assert kwargs.get('abort_on_new_batch') is False
 
 
+def test_send_null_key_with_non_sticky_partitioner_skips_abort_path():
+    partitioner = MagicMock(spec=Partitioner)
+    partitioner.partition.return_value = 0
+
+    with _producer_for_send_test(partitioner) as producer:
+        producer._accumulator.append.return_value = _success_result()
+        producer.send('t', value=b'v')
+
+        assert producer._accumulator.append.call_count == 1
+        kwargs = producer._accumulator.append.call_args.kwargs
+        assert kwargs.get('abort_on_new_batch') is False
+
+
 def test_idempotent_producer_reset_producer_id(cluster):
     transaction_manager = TransactionManager(
         transactional_id=None,

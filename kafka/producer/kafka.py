@@ -249,8 +249,10 @@ class KafkaProducer:
             implementation hashes each non-None serialized key using the same
             algorithm as the java client (murmur2) so that messages with the
             same key are assigned to the same partition.
-            When a key is None, the message is delivered to a random partition
+            When a key is None, DefaultPartitioner selects a random partition
             (filtered to partitions with available leaders only, if possible).
+            Pass StickyPartitioner to keep null-key records on one partition
+            until RecordAccumulator starts another batch.
             Default: DefaultPartitioner().
         connections_max_idle_ms: Close idle connections after the number of
             milliseconds specified by this config. The broker closes idle
@@ -988,21 +990,15 @@ class KafkaProducer:
         if self._transaction_manager and self._transaction_manager.is_transactional():
             self._transaction_manager.maybe_add_partition_to_transaction(tp)
 
-        # KIP-480: when sticky-aware partitioning is in play (no explicit
-        # partition, no key), try once with abort_on_new_batch=True. If the
-        # accumulator would have to allocate a fresh batch for this partition,
-        # rotate the sticky partition first and re-pick. The record that
-        # *triggers* the new batch then lands on the rotated partition, not
-        # the next one.
-        sticky_eligible = not explicit_partition and key_bytes is None
+        on_new_batch = getattr(self.config['partitioner'], 'on_new_batch', None)
+        sticky_eligible = (
+            not explicit_partition and key_bytes is None and callable(on_new_batch))
         result = self._accumulator.append(tp, timestamp_ms, key_bytes, value_bytes, headers,
                                           abort_on_new_batch=sticky_eligible)
         future, batch_is_full, new_batch_created, abort_for_new_batch = result
         if abort_for_new_batch:
             prev_partition = partition
-            on_new_batch = getattr(self.config['partitioner'], 'on_new_batch', None)
-            if on_new_batch is not None:
-                on_new_batch(topic, self._metadata, prev_partition)
+            on_new_batch(topic, self._metadata, prev_partition)
             # Re-pick - sticky cache may now point at a different partition.
             partition = self._partition(topic, None, key, value, key_bytes, value_bytes)
             tp = TopicPartition(topic, partition)

@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 import pytest
+import random
 
 from kafka.partitioner import DefaultPartitioner, StickyPartitioner, murmur2
 
@@ -68,6 +69,17 @@ def test_murmur2_not_ascii():
 
 
 class TestStickyPartitioner:
+    def test_fixed_random_source_selection_sequence(self):
+        sticky = StickyPartitioner(random.Random(0))
+        cluster = _cluster('t', list(range(4)))
+
+        sequence = [sticky.partition('t', None, None, 'msg', b'msg', cluster)]
+        for _ in range(3):
+            sticky.on_new_batch('t', cluster, sequence[-1])
+            sequence.append(sticky.partition('t', None, None, 'msg', b'msg', cluster))
+
+        assert sequence == [3, 1, 0, 2]
+
     def test_keyed_records_hash_like_default(self):
         sticky = StickyPartitioner()
         default = DefaultPartitioner()
