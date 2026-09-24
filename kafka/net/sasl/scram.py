@@ -1,4 +1,5 @@
 import base64
+import binascii
 import hashlib
 import hmac
 import logging
@@ -14,6 +15,35 @@ log = logging.getLogger(__name__)
 
 def xor_bytes(left, right):
     return bytes(lb ^ rb for lb, rb in zip(left, right))
+
+
+def _escape_saslname(name):
+    # RFC 5802 section 5.1: '=' and ',' in usernames are escaped
+    # as '=3D' and '=2C' respectively ('=' must be escaped first).
+    return name.replace(b'=', b'=3D').replace(b',', b'=2C')
+
+
+def _parse_scram_message(message):
+    # RFC 5802 section 7: attributes are a single ALPHA, values are
+    # printable characters excluding ','. Unknown mandatory extensions
+    # ('m=') and duplicated attributes must be rejected.
+    try:
+        decoded = message.decode('utf-8')
+    except UnicodeDecodeError:
+        raise ValueError('SCRAM message is not valid UTF-8')
+    params = {}
+    for part in decoded.split(','):
+        if len(part) < 3 or part[1] != '=' or not part[0].isascii() or not part[0].isalpha():
+            raise ValueError('Malformed attribute in SCRAM message')
+        attr, value = part[0], part[2:]
+        if not all(0x21 <= ord(char) <= 0x7E for char in value):
+            raise ValueError('Invalid character in SCRAM attribute value')
+        if attr in params:
+            raise ValueError('Duplicate attribute in SCRAM message')
+        if attr == 'm':
+            raise ValueError('Unsupported mandatory extension in SCRAM message')
+        params[attr] = value
+    return params
 
 
 class SaslMechanismScram(SaslMechanism):
@@ -62,7 +92,7 @@ class SaslMechanismScram(SaslMechanism):
         return self._state == 2
 
     def auth_details(self):
-        if not self.is_authenticated:
+        if not self.is_authenticated():
             raise RuntimeError('Not authenticated yet!')
         return 'Authenticated as %s via SASL / %s' % (self.username, self.mechanism)
 
@@ -72,6 +102,7 @@ class ScramClient:
         'SCRAM-SHA-256': hashlib.sha256,
         'SCRAM-SHA-512': hashlib.sha512
     }
+    MAX_ITERATIONS = 1000000
 
     def __init__(self, user, password, mechanism):
         self.nonce = str(uuid.uuid4()).replace('-', '').encode('utf-8')
@@ -87,36 +118,74 @@ class ScramClient:
         self.client_proof = None
         self.server_key = None
         self.server_signature = None
+        self._state = 0
 
     def first_message(self):
-        client_first_bare = b'n=' + self.user + b',r=' + self.nonce
-        self.auth_message += client_first_bare
+        if self._state != 0:
+            raise ValueError('client-first-message already sent')
+        client_first_bare = b'n=' + _escape_saslname(self.user) + b',r=' + self.nonce
+        self.auth_message = client_first_bare
+        self._state = 1
         return b'n,,' + client_first_bare
 
     def process_server_first_message(self, server_first_message):
-        self.auth_message += b',' + server_first_message
-        params = dict(pair.split('=', 1) for pair in server_first_message.decode('utf-8').split(','))
+        if self._state != 1:
+            raise ValueError('Cannot process server-first-message in current state')
+        params = _parse_scram_message(server_first_message)
+        for required in ('r', 's', 'i'):
+            if required not in params:
+                raise ValueError('Missing required attribute in server-first-message')
+
         server_nonce = params['r'].encode('utf-8')
-        if not server_nonce.startswith(self.nonce):
-            raise ValueError("Server nonce, did not start with client nonce!")
-        self.nonce = server_nonce
-        self.auth_message += b',c=biws,r=' + self.nonce
+        if not server_nonce.startswith(self.nonce) or len(server_nonce) <= len(self.nonce):
+            raise ValueError('Server nonce did not extend the client nonce')
 
-        salt = base64.b64decode(params['s'].encode('utf-8'))
         try:
-            iterations = int(params['i'])
-            if iterations > 1000000:
-                raise ValueError('too many iterations')
-        except (TypeError, ValueError):
-            raise ValueError('Invalid value (not integer or too large) for Iteration count in server-first-message')
-        self.create_salted_password(salt, iterations)
+            salt = base64.b64decode(params['s'].encode('utf-8'), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError('Invalid base64 salt in server-first-message')
+        if not salt:
+            raise ValueError('Empty salt in server-first-message')
 
-        self.client_key = self.hmac(self.salted_password, b'Client Key')
-        self.stored_key = self.hashfunc(self.client_key).digest()
-        self.client_signature = self.hmac(self.stored_key, self.auth_message)
-        self.client_proof = xor_bytes(self.client_key, self.client_signature)
-        self.server_key = self.hmac(self.salted_password, b'Server Key')
-        self.server_signature = self.hmac(self.server_key, self.auth_message)
+        iterations = self._parse_iteration_count(params['i'])
+
+        # Compute everything locally; internal state is only published
+        # once the server-first-message has been fully validated, so a
+        # rejected challenge can never leave a half-updated auth_message
+        # or a proof derived from it.
+        salted_password = hashlib.pbkdf2_hmac(
+            self.hashname, self.password, salt, iterations
+        )
+        auth_message = (
+            self.auth_message + b',' + server_first_message
+            + b',c=biws,r=' + server_nonce
+        )
+        client_key = self.hmac(salted_password, b'Client Key')
+        stored_key = self.hashfunc(client_key).digest()
+        client_signature = self.hmac(stored_key, auth_message)
+        client_proof = xor_bytes(client_key, client_signature)
+        server_key = self.hmac(salted_password, b'Server Key')
+        server_signature = self.hmac(server_key, auth_message)
+
+        self.nonce = server_nonce
+        self.auth_message = auth_message
+        self.salted_password = salted_password
+        self.client_key = client_key
+        self.stored_key = stored_key
+        self.client_signature = client_signature
+        self.client_proof = client_proof
+        self.server_key = server_key
+        self.server_signature = server_signature
+        self._state = 2
+
+    def _parse_iteration_count(self, value):
+        # RFC 5802: iteration-count = %x31-39 *DIGIT
+        if not value or not value.isascii() or not value.isdigit() or value[0] == '0':
+            raise ValueError('Invalid iteration count in server-first-message')
+        iterations = int(value)
+        if iterations < 1 or iterations > self.MAX_ITERATIONS:
+            raise ValueError('Iteration count out of range in server-first-message')
+        return iterations
 
     def hmac(self, key, msg):
         return hmac.new(key, msg, digestmod=self.hashfunc).digest()
@@ -127,9 +196,22 @@ class ScramClient:
         )
 
     def final_message(self):
+        if self._state != 2 or self.client_proof is None:
+            raise ValueError('Cannot create client-final-message before a valid server-first-message')
         return b'c=biws,r=' + self.nonce + b',p=' + base64.b64encode(self.client_proof)
 
     def process_server_final_message(self, server_final_message):
-        params = dict(pair.split('=', 1) for pair in server_final_message.decode('utf-8').split(','))
-        if self.server_signature != base64.b64decode(params['v'].encode('utf-8')):
+        if self._state != 2:
+            raise ValueError('Cannot process server-final-message in current state')
+        params = _parse_scram_message(server_final_message)
+        if 'e' in params:
+            raise ValueError('Server returned an error during SCRAM authentication: %s' % params['e'])
+        if 'v' not in params:
+            raise ValueError('Missing verifier in server-final-message')
+        try:
+            verifier = base64.b64decode(params['v'].encode('utf-8'), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError('Invalid base64 verifier in server-final-message')
+        if self.server_signature is None or not hmac.compare_digest(self.server_signature, verifier):
             raise ValueError("Server sent wrong signature!")
+        self._state = 3
