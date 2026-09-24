@@ -1,7 +1,9 @@
 import base64
+import binascii
 import hashlib
 import hmac
 import logging
+import string
 import uuid
 
 
@@ -12,18 +14,43 @@ from kafka.errors import KafkaConfigurationError
 log = logging.getLogger(__name__)
 
 
+# Upper bound on the PBKDF2 iteration count accepted from the server,
+# guarding against denial-of-service via a malicious challenge.
+MAX_ITERATIONS = 1000000
+
+
 def xor_bytes(left, right):
     return bytes(lb ^ rb for lb, rb in zip(left, right))
+
+
+def saslname(name):
+    # RFC 5802: '=' is escaped as '=3D' and ',' as '=2C'; escape '=' first
+    # so the escape sequences themselves are not re-escaped.
+    return name.replace(b'=', b'=3D').replace(b',', b'=2C')
+
+
+def parse_scram_attributes(message):
+    # RFC 5802 section 7: attr-value = ALPHA "=" value, joined by ',';
+    # value is 1*value-char, and no attribute may appear more than once.
+    attributes = {}
+    for part in message.split(','):
+        if len(part) < 3 or part[0] not in string.ascii_letters or part[1] != '=':
+            raise ValueError('Malformed attribute in SCRAM message')
+        attr, value = part[0], part[2:]
+        if attr in attributes:
+            raise ValueError('Duplicate attribute in SCRAM message: %s' % attr)
+        attributes[attr] = value
+    return attributes
 
 
 class SaslMechanismScram(SaslMechanism):
     def __init__(self, **config):
         if not config.get('sasl_plain_username', ''):
-            KafkaConfigurationError('sasl_plain_username required for SCRAM sasl')
+            raise KafkaConfigurationError('sasl_plain_username required for SCRAM sasl')
         if not config.get('sasl_plain_password', ''):
-            KafkaConfigurationError('sasl_plain_password required for SCRAM sasl')
+            raise KafkaConfigurationError('sasl_plain_password required for SCRAM sasl')
         if config.get('sasl_mechanism', '') not in ScramClient.MECHANISMS:
-            KafkaConfigurationError('Unrecognized SCRAM mechanism')
+            raise KafkaConfigurationError('Unrecognized SCRAM mechanism')
         if config.get('security_protocol', '') == 'SASL_PLAINTEXT':
             log.warning('Exchanging credentials in the clear during Sasl Authentication')
 
@@ -89,34 +116,70 @@ class ScramClient:
         self.server_signature = None
 
     def first_message(self):
-        client_first_bare = b'n=' + self.user + b',r=' + self.nonce
-        self.auth_message += client_first_bare
+        client_first_bare = b'n=' + saslname(self.user) + b',r=' + self.nonce
+        self.auth_message = client_first_bare
         return b'n,,' + client_first_bare
 
     def process_server_first_message(self, server_first_message):
-        self.auth_message += b',' + server_first_message
-        params = dict(pair.split('=', 1) for pair in server_first_message.decode('utf-8').split(','))
-        server_nonce = params['r'].encode('utf-8')
-        if not server_nonce.startswith(self.nonce):
-            raise ValueError("Server nonce, did not start with client nonce!")
-        self.nonce = server_nonce
-        self.auth_message += b',c=biws,r=' + self.nonce
-
-        salt = base64.b64decode(params['s'].encode('utf-8'))
+        if not self.auth_message:
+            raise ValueError('Cannot process server-first-message before sending client-first-message')
+        if self.client_proof is not None:
+            raise ValueError('server-first-message already processed')
         try:
-            iterations = int(params['i'])
-            if iterations > 1000000:
-                raise ValueError('too many iterations')
-        except (TypeError, ValueError):
-            raise ValueError('Invalid value (not integer or too large) for Iteration count in server-first-message')
-        self.create_salted_password(salt, iterations)
+            decoded = server_first_message.decode('utf-8')
+        except UnicodeDecodeError:
+            raise ValueError('Invalid server-first-message: not valid UTF-8')
+        params = parse_scram_attributes(decoded)
+        if 'm' in params:
+            raise ValueError('Server requires an unsupported mandatory SCRAM extension')
+        for required in ('r', 's', 'i'):
+            if required not in params:
+                raise ValueError('Missing required attribute in server-first-message: %s' % required)
 
-        self.client_key = self.hmac(self.salted_password, b'Client Key')
-        self.stored_key = self.hashfunc(self.client_key).digest()
-        self.client_signature = self.hmac(self.stored_key, self.auth_message)
-        self.client_proof = xor_bytes(self.client_key, self.client_signature)
-        self.server_key = self.hmac(self.salted_password, b'Server Key')
-        self.server_signature = self.hmac(self.server_key, self.auth_message)
+        server_nonce = params['r'].encode('utf-8')
+        if not server_nonce.startswith(self.nonce) or len(server_nonce) == len(self.nonce):
+            raise ValueError('Server nonce does not extend the client nonce')
+
+        try:
+            salt = base64.b64decode(params['s'].encode('utf-8'), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError('Invalid base64 salt in server-first-message')
+
+        iterations = params['i']
+        if not iterations.isascii() or not iterations.isdigit():
+            raise ValueError('Invalid iteration count in server-first-message')
+        iterations = int(iterations)
+        if iterations <= 0 or iterations > MAX_ITERATIONS:
+            raise ValueError('Iteration count out of range in server-first-message')
+
+        # Compute everything into locals first; only commit to instance
+        # state once the challenge has been fully validated, so that a
+        # rejected challenge cannot leave a half-updated auth_message
+        # or leak a proof derived from the password.
+        auth_message = b','.join([
+            self.auth_message,
+            server_first_message,
+            b'c=biws,r=' + server_nonce,
+        ])
+        salted_password = hashlib.pbkdf2_hmac(
+            self.hashname, self.password, salt, iterations
+        )
+        client_key = self.hmac(salted_password, b'Client Key')
+        stored_key = self.hashfunc(client_key).digest()
+        client_signature = self.hmac(stored_key, auth_message)
+        client_proof = xor_bytes(client_key, client_signature)
+        server_key = self.hmac(salted_password, b'Server Key')
+        server_signature = self.hmac(server_key, auth_message)
+
+        self.nonce = server_nonce
+        self.auth_message = auth_message
+        self.salted_password = salted_password
+        self.client_key = client_key
+        self.stored_key = stored_key
+        self.client_signature = client_signature
+        self.client_proof = client_proof
+        self.server_key = server_key
+        self.server_signature = server_signature
 
     def hmac(self, key, msg):
         return hmac.new(key, msg, digestmod=self.hashfunc).digest()
@@ -127,9 +190,25 @@ class ScramClient:
         )
 
     def final_message(self):
+        if self.client_proof is None:
+            raise ValueError('Cannot create client-final-message before a valid server-first-message')
         return b'c=biws,r=' + self.nonce + b',p=' + base64.b64encode(self.client_proof)
 
     def process_server_final_message(self, server_final_message):
-        params = dict(pair.split('=', 1) for pair in server_final_message.decode('utf-8').split(','))
-        if self.server_signature != base64.b64decode(params['v'].encode('utf-8')):
-            raise ValueError("Server sent wrong signature!")
+        if self.server_signature is None:
+            raise ValueError('Cannot process server-final-message before server-first-message')
+        try:
+            decoded = server_final_message.decode('utf-8')
+        except UnicodeDecodeError:
+            raise ValueError('Invalid server-final-message: not valid UTF-8')
+        params = parse_scram_attributes(decoded)
+        if 'e' in params:
+            raise ValueError('Server returned an error during SCRAM authentication: %s' % params['e'])
+        if 'v' not in params:
+            raise ValueError('Missing verifier in server-final-message')
+        try:
+            verifier = base64.b64decode(params['v'].encode('utf-8'), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError('Invalid base64 verifier in server-final-message')
+        if not hmac.compare_digest(self.server_signature, verifier):
+            raise ValueError('Server signature verification failed')
