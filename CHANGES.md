@@ -1,3 +1,12 @@
+# Unreleased
+
+### Features
+* consumer: add BoundedReadSession for finite reads over an explicit
+  partition list -- captures per-partition end boundaries (LSO under
+  read_committed) up front, reads caller-specified start offsets up to
+  those boundaries, and stops; aborts on topic identity (recreation)
+  changes instead of reading the new log
+
 # 3.0.7 (Jun 28, 2026)
 
 ### Fixes

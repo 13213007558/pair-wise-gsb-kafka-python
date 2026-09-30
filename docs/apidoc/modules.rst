@@ -24,6 +24,11 @@ produces.
 - :class:`~kafka.consumer.fetcher.ConsumerRecord` - a single record
   consumed from a topic partition, as yielded by
   :meth:`~kafka.KafkaConsumer.poll` and consumer iteration.
+- :class:`~kafka.consumer.bounded.BoundedReadSession` - a finite read
+  session over an explicit partition list: captures each partition's end
+  boundary (LSO under read_committed) up front, reads caller-specified
+  start offsets up to those boundaries, and stops -- for offline
+  validation that must not chase newly appended data.
 - :class:`~kafka.ConsumerRebalanceListener` - base class for receiving
   partition join/revoke callbacks during a group rebalance. Also includes
   the async interface :class:`~kafka.AsyncConsumerRebalanceListener`.
@@ -34,6 +39,7 @@ produces.
 
    KafkaConsumer <KafkaConsumer>
    ConsumerRecord <misc/ConsumerRecord>
+   BoundedReadSession <misc/BoundedReadSession>
    ConsumerRebalanceListener <misc/ConsumerRebalanceListener>
 
 
