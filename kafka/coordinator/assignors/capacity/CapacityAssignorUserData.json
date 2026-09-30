@@ -1,0 +1,17 @@
+{
+  "type": "data",
+  "name": "CapacityAssignorUserData",
+  "validVersions": "1",
+  "flexibleVersions": "none",
+  "fields": [
+    { "name": "Capacity", "type": "int32", "versions": "1+",
+      "about": "The member's processing capacity relative to one default member." },
+    { "name": "PreviousAssignment", "type": "[]TopicPartition", "versions": "1+", "fields": [
+        { "name": "Topic", "type": "string", "mapKey": true, "versions": "1+", "entityType": "topicName",
+          "about": "The topic name." },
+        { "name": "Partitions", "type": "[]int32", "versions": "1+",
+          "about": "The partition ids." }
+      ]
+    }
+  ]
+}

@@ -51,7 +51,7 @@ benchmarks = ["pyperf"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-kafka = ["protocol/schemas/resources/*.json", "coordinator/assignors/sticky/*.json", "**/*.pyi"]
+kafka = ["protocol/schemas/resources/*.json", "coordinator/assignors/sticky/*.json", "coordinator/assignors/capacity/*.json", "**/*.pyi"]
 
 [tool.setuptools.packages.find]
 exclude = ["test"]
