@@ -1,5 +1,6 @@
+from kafka.consumer.bounded import BoundedFetchSession, TopicRecreatedError
 from kafka.consumer.group import KafkaConsumer
 
 __all__ = [
-    'KafkaConsumer'
+    'BoundedFetchSession', 'KafkaConsumer', 'TopicRecreatedError',
 ]

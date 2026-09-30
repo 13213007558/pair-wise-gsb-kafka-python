@@ -11,7 +11,7 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 
 from kafka.admin import KafkaAdminClient
-from kafka.consumer import KafkaConsumer
+from kafka.consumer import BoundedFetchSession, KafkaConsumer, TopicRecreatedError
 from kafka.consumer.subscription_state import (
     AsyncConsumerRebalanceListener, ConsumerRebalanceListener,
 )
@@ -25,10 +25,11 @@ from kafka.protocol.consumer import IsolationLevel, OffsetSpec
 
 
 __all__ = [
-    'KafkaAdminClient', 'KafkaConsumer', 'KafkaProducer',
+    'BoundedFetchSession', 'KafkaAdminClient', 'KafkaConsumer', 'KafkaProducer',
     'AsyncConsumerRebalanceListener', 'ConsumerRebalanceListener',
     'DefaultSerializer', 'JsonSerializer', 'Serializer', 'Deserializer',
     'ConsumerGroupMetadata', 'OffsetAndMetadata',
     'TopicPartition', 'TopicPartitionReplica',
+    'TopicRecreatedError',
     'IsolationLevel', 'OffsetSpec',
 ]

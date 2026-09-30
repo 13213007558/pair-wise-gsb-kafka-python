@@ -8,6 +8,7 @@ import time
 import kafka.errors as Errors
 from kafka.errors import KafkaConfigurationError, UnsupportedVersionError
 
+from kafka.consumer.bounded import BoundedFetchSession
 from kafka.consumer.fetcher import Fetcher
 from kafka.consumer.subscription_state import SubscriptionState
 from kafka.coordinator.consumer import ConsumerCoordinator
@@ -578,6 +579,33 @@ class KafkaConsumer:
             self._subscription.assign_from_user(partitions)
             self._cluster.set_topics([tp.topic for tp in partitions])
             log.debug("Subscribed to partition(s): %s", partitions)
+
+    def bounded_fetch_session(self, partitions, start_offsets,
+                              timeout_ms=None, max_records=None):
+        """Create a finite read session over explicit partitions.
+
+        Boundaries are captured when the session starts, using the last stable
+        offset under ``read_committed`` and the high-watermark otherwise. The
+        session does not join or rebalance a consumer group. Starting offsets
+        are caller-supplied and are not committed automatically.
+
+        Arguments:
+            partitions (list[TopicPartition]): Partitions to read.
+            start_offsets (dict[TopicPartition, int]): First offset per
+                partition.
+            timeout_ms (int, optional): Overall capture/read timeout.
+            max_records (int, optional): Maximum records returned by each
+                :meth:`BoundedFetchSession.poll` call.
+
+        Returns:
+            BoundedFetchSession
+        """
+        if self._closed:
+            raise Errors.IllegalStateError('KafkaConsumer is closed')
+        return BoundedFetchSession(
+            self._client, partitions, start_offsets,
+            timeout_ms=timeout_ms if timeout_ms is not None else self.config['default_api_timeout_ms'],
+            max_records=max_records, **self.config)
 
     def assignment(self):
         """Get the TopicPartitions currently assigned to this consumer.
