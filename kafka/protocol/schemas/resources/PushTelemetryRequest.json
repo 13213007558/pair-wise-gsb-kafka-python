@@ -1,0 +1,20 @@
+{
+  "apiKey": 72,
+  "type": "request",
+  "listeners": ["broker"],
+  "name": "PushTelemetryRequest",
+  "validVersions": "0",
+  "flexibleVersions": "0+",
+  "fields": [
+    { "name": "ClientInstanceId", "type": "uuid", "versions": "0+",
+      "about": "The client instance id that was provided by the broker in the GetTelemetrySubscriptionsResponse." },
+    { "name": "SubscriptionId", "type": "int32", "versions": "0+",
+      "about": "The subscription id that was provided by the broker in the GetTelemetrySubscriptionsResponse." },
+    { "name": "Terminating", "type": "bool", "versions": "0+",
+      "about": "Whether the client is terminating and will not send any more telemetry pushes." },
+    { "name": "CompressionType", "type": "int8", "versions": "0+",
+      "about": "The compression type used for the metrics payload." },
+    { "name": "Metrics", "type": "bytes", "versions": "0+", "nullableVersions": "0+",
+      "about": "The OpenTelemetry MetricsData protobuf payload, compressed with the given compression type." }
+  ]
+}

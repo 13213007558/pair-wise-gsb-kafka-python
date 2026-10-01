@@ -17,6 +17,7 @@ from kafka.metrics import MetricConfig, Metrics
 from kafka.net.compat import KafkaNetClient
 from kafka.protocol.consumer import OffsetResetStrategy
 from kafka.structs import ConsumerGroupMetadata, OffsetAndMetadata, TopicPartition
+from kafka.telemetry import ClientTelemetryReporter
 from kafka.util import Timer
 from kafka.version import __version__
 
@@ -281,6 +282,9 @@ class KafkaConsumer:
             metrics. Default: 2
         metrics_sample_window_ms (int): The maximum age in milliseconds of
             samples used to compute metrics. Default: 30000
+        enable_metrics_push (bool): Whether to push client telemetry metrics
+            to the broker per KIP-714 (GetTelemetrySubscriptions /
+            PushTelemetry). Default: False
         net (str or kafka.net.backend.NetBackend): The async backend that runs
             this client's network I/O event loop. One of: a NetBackend
             instance; a registered name -- 'selector' (the built-in
@@ -376,6 +380,7 @@ class KafkaConsumer:
         'metrics_enabled': True,
         'metrics_num_samples': 2,
         'metrics_sample_window_ms': 30000,
+        'enable_metrics_push': False,
         'metric_group_prefix': 'consumer',
         'selector': None,  # deprecated; use net instead
         'exclude_internal_topics': True,
@@ -499,6 +504,14 @@ class KafkaConsumer:
             self._client, self._subscription, metrics=self._metrics,
             assignors=self.config['partition_assignment_strategy'],
             **self.config)
+        self._telemetry_reporter = None
+        if self.config['enable_metrics_push'] and self._metrics is not None:
+            self._telemetry_reporter = ClientTelemetryReporter(
+                self._client, self._metrics,
+                client_id=self.config['client_id'] or '',
+                retry_backoff_ms=self.config['retry_backoff_ms'],
+                request_timeout_ms=self.config['request_timeout_ms'])
+            self._telemetry_reporter.start()
         self._closed = False
         self._iterator = None
         self._consumer_timeout = float('inf')
@@ -629,6 +642,11 @@ class KafkaConsumer:
         if timeout_ms is None:
             timeout_ms = self.config['request_timeout_ms']
         self._coordinator.close(autocommit=autocommit, timeout_ms=timeout_ms)
+        if self._telemetry_reporter is not None:
+            try:
+                self._telemetry_reporter.close(timeout_ms=timeout_ms)
+            except Exception:
+                log.exception("Failed to close telemetry reporter")
         if self._metrics:
             self._metrics.close()
         self._client.close()

@@ -56,6 +56,7 @@ MESSAGE_MODULES = [
     'kafka.protocol.producer.produce',
     'kafka.protocol.producer.transaction',
     'kafka.protocol.sasl',
+    'kafka.protocol.telemetry',
 ]
 
 

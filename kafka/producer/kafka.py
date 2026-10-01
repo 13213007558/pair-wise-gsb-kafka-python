@@ -20,6 +20,7 @@ from kafka.record.default_records import DefaultRecordBatchBuilder
 from kafka.record.legacy_records import LegacyRecordBatchBuilder
 from kafka.serializer import Serializer, SerializeWrapper
 from kafka.structs import TopicPartition
+from kafka.telemetry import ClientTelemetryReporter
 from kafka.util import Timer
 
 
@@ -391,6 +392,9 @@ class KafkaProducer:
             metrics. Default: 2
         metrics_sample_window_ms (int): The maximum age in milliseconds of
             samples used to compute metrics. Default: 30000
+        enable_metrics_push (bool): Whether to push client telemetry metrics
+            to the broker per KIP-714 (GetTelemetrySubscriptions /
+            PushTelemetry). Default: False
         net (str or kafka.net.backend.NetBackend): The async backend that runs
             this client's network I/O event loop. One of: a NetBackend
             instance; a registered name -- 'selector' (the built-in
@@ -474,6 +478,7 @@ class KafkaProducer:
         'metrics_enabled': True,
         'metrics_num_samples': 2,
         'metrics_sample_window_ms': 30000,
+        'enable_metrics_push': False,
         'selector': None,  # deprecated; use net instead
         'sasl_mechanism': None,
         'sasl_plain_username': None,
@@ -556,6 +561,14 @@ class KafkaProducer:
         self._manager = manager = client._manager
         self._net = client._net
         self._net.start()
+
+        self._telemetry_reporter = None
+        if self.config['enable_metrics_push'] and self._metrics is not None:
+            self._telemetry_reporter = ClientTelemetryReporter(
+                client, self._metrics, client_id=self.config['client_id'] or '',
+                retry_backoff_ms=self.config['retry_backoff_ms'],
+                request_timeout_ms=self.config['request_timeout_ms'])
+            self._telemetry_reporter.start()
 
         # We currently depend on eager-resolution of api_version.
         # If it wasn't provided as a config option, we need to bootstrap
@@ -741,6 +754,13 @@ class KafkaProducer:
             self._sender.force_close()
             if not on_io_thread:
                 self._net.wait_for(self._sender._loop_future, timeout_ms=self.config['retry_backoff_ms'], raise_error=False)
+
+        if self._telemetry_reporter is not None:
+            try:
+                self._telemetry_reporter.close(
+                    timeout_ms=min(timeout * 1000, self.config['request_timeout_ms']))
+            except Exception:
+                log.exception("%s: Failed to close telemetry reporter", str(self))
 
         if not on_io_thread:
             try:

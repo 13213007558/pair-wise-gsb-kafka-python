@@ -1,0 +1,12 @@
+{
+  "apiKey": 71,
+  "type": "request",
+  "listeners": ["broker"],
+  "name": "GetTelemetrySubscriptionsRequest",
+  "validVersions": "0",
+  "flexibleVersions": "0+",
+  "fields": [
+    { "name": "ClientInstanceId", "type": "uuid", "versions": "0+",
+      "about": "The client instance id that was provided by the broker in the previous response, or the zero UUID if this is the first request." }
+  ]
+}
