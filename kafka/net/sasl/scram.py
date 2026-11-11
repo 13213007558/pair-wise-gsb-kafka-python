@@ -16,6 +16,17 @@ def xor_bytes(left, right):
     return bytes(lb ^ rb for lb, rb in zip(left, right))
 
 
+def parse_scram_attributes(message):
+    # RFC 5802 attribute-value pairs; each attribute may appear at most once
+    params = {}
+    for pair in message.decode('utf-8').split(','):
+        attr, _, value = pair.partition('=')
+        if attr in params:
+            raise ValueError('Duplicate attribute in SCRAM message: %s' % attr)
+        params[attr] = value
+    return params
+
+
 class SaslMechanismScram(SaslMechanism):
     def __init__(self, **config):
         if not config.get('sasl_plain_username', ''):
@@ -95,7 +106,7 @@ class ScramClient:
 
     def process_server_first_message(self, server_first_message):
         self.auth_message += b',' + server_first_message
-        params = dict(pair.split('=', 1) for pair in server_first_message.decode('utf-8').split(','))
+        params = parse_scram_attributes(server_first_message)
         server_nonce = params['r'].encode('utf-8')
         if not server_nonce.startswith(self.nonce):
             raise ValueError("Server nonce, did not start with client nonce!")
@@ -130,6 +141,6 @@ class ScramClient:
         return b'c=biws,r=' + self.nonce + b',p=' + base64.b64encode(self.client_proof)
 
     def process_server_final_message(self, server_final_message):
-        params = dict(pair.split('=', 1) for pair in server_final_message.decode('utf-8').split(','))
+        params = parse_scram_attributes(server_final_message)
         if self.server_signature != base64.b64decode(params['v'].encode('utf-8')):
             raise ValueError("Server sent wrong signature!")
