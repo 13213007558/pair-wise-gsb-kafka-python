@@ -1,0 +1,1175 @@
+[
+  {
+    "name": "P1 legacy-v0 valid",
+    "category": "positive",
+    "expect": "accepted",
+    "note": "oracle sanity: hand-built v0 message parses",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 2,
+      "crc_failed": false,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "P2 legacy-v1 valid",
+    "category": "positive",
+    "expect": "accepted",
+    "note": "oracle sanity: hand-built v1 message parses",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 2,
+      "crc_failed": false,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "P3 legacy-v1 gzip valid",
+    "category": "positive",
+    "expect": "accepted",
+    "note": "2 inner records, relative offsets",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": false,
+      "deserialize_calls": 4,
+      "records_consumed": 2,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-2"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-2"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ],
+      [
+        1,
+        "key-2",
+        "value-payload-2"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "P4 v2 valid",
+    "category": "positive",
+    "expect": "accepted",
+    "note": "2 records, one with headers",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": false,
+      "deserialize_calls": 4,
+      "records_consumed": 2,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-2"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-2"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ],
+      [
+        1,
+        "key-2",
+        "value-payload-2"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "P5 v2 gzip valid",
+    "category": "positive",
+    "expect": "accepted",
+    "note": "gzip-compressed record batch",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": false,
+      "deserialize_calls": 4,
+      "records_consumed": 2,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-2"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-2"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ],
+      [
+        1,
+        "key-2",
+        "value-payload-2"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "I1 legacy-v0 value byte flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "value is CRC-covered",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I2 legacy-v1 key byte flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "key is CRC-covered",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I3 legacy-v1 attributes flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "attributes byte is CRC-covered",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I4 legacy-v1 timestamp flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "v1 timestamp is CRC-covered",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I5 legacy-gzip compressed payload flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "outer CRC covers compressed bytes; rejected before gunzip",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 1 failed crc check"
+  },
+  {
+    "name": "I6 legacy-gzip inner CRC corrupt, outer CRC valid",
+    "category": "inside-crc",
+    "expect": "partial-then-reject",
+    "note": "corruption predates compression; outer CRC passes, good inner record 1 is deserialized, corrupt inner record 2 is rejected before ITS deserializer call",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": true,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        false
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ]
+    ],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record for partition TopicPartition(topic='audit-topic', partition=0) at offset 1 failed crc check"
+  },
+  {
+    "name": "I7 v2 record value byte flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "record payload is CRC32C-covered",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I8 v2 attributes flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "attributes are the first CRC32C-covered bytes",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I9 v2 last_offset_delta flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "header field, but inside CRC32C coverage",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I10 v2-gzip compressed payload flipped",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "batch CRC32C covers compressed payload; rejected before gunzip",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "I11 v2 corrupt 2nd record of 2-record batch",
+    "category": "inside-crc",
+    "expect": "crc-reject",
+    "note": "batch CRC is atomic: record 1 must NOT be deserialized either",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "O1 legacy-v1 offset field rewritten 0->5",
+    "category": "outside-crc",
+    "expect": "accepted-shifted",
+    "note": "offset is outside CRC; consumer accepts shifted offset",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 2,
+      "crc_failed": false,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ]
+    ],
+    "consumed": [
+      [
+        5,
+        "key-1",
+        "value-payload-1"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "O2 legacy-v1 message_size shrunk by 1",
+    "category": "outside-crc",
+    "expect": "crc-reject",
+    "note": "size field not covered, but shorter slice changes CRC input -> caught indirectly",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "O3 legacy-v1 message_size grown by 4",
+    "category": "outside-crc",
+    "expect": "silent-drop",
+    "note": "declared size exceeds buffer -> framing drops batch, no error at all",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "none"
+    },
+    "events": [],
+    "consumed": [],
+    "error": null
+  },
+  {
+    "name": "O4 v2 base_offset rewritten 0->5",
+    "category": "outside-crc",
+    "expect": "accepted-shifted",
+    "note": "base_offset is outside CRC32C; offsets shift silently",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": false,
+      "deserialize_calls": 4,
+      "records_consumed": 2,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-2"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-2"
+      ]
+    ],
+    "consumed": [
+      [
+        5,
+        "key-1",
+        "value-payload-1"
+      ],
+      [
+        6,
+        "key-2",
+        "value-payload-2"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "O5 v2 leader_epoch rewritten",
+    "category": "outside-crc",
+    "expect": "accepted-shifted",
+    "note": "leader epoch is outside CRC32C",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": false,
+      "deserialize_calls": 4,
+      "records_consumed": 2,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-2"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-2"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ],
+      [
+        1,
+        "key-2",
+        "value-payload-2"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "O6 v2 batch_length shrunk by 4",
+    "category": "outside-crc",
+    "expect": "crc-reject",
+    "note": "length not covered, but shorter slice changes CRC32C input -> caught indirectly",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "O7 v2 batch_length grown by 4",
+    "category": "outside-crc",
+    "expect": "silent-drop",
+    "note": "declared length exceeds buffer -> framing drops batch silently",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "none"
+    },
+    "events": [],
+    "consumed": [],
+    "error": null
+  },
+  {
+    "name": "O8 v2 magic byte 2->1",
+    "category": "outside-crc",
+    "expect": "crc-reject",
+    "note": "magic is outside CRC; batch is REINTERPRETED as legacy and fails legacy CRC by accident",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "T1 legacy truncated mid-message",
+    "category": "truncation",
+    "expect": "silent-drop",
+    "note": "declared size exceeds remaining buffer: dropped, no error, no deserializer call",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "none"
+    },
+    "events": [],
+    "consumed": [],
+    "error": null
+  },
+  {
+    "name": "T2 legacy truncated below LOG_OVERHEAD",
+    "category": "truncation",
+    "expect": "silent-drop",
+    "note": "fewer than 12 bytes left: dropped silently",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "none"
+    },
+    "events": [],
+    "consumed": [],
+    "error": null
+  },
+  {
+    "name": "T3 legacy declared size below MIN_SLICE",
+    "category": "truncation",
+    "expect": "framing-reject",
+    "note": "complete slice smaller than minimum record overhead -> CorruptRecordError",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record size is less than the minimum record overhead (14)"
+  },
+  {
+    "name": "T4 v2 truncated mid-batch",
+    "category": "truncation",
+    "expect": "silent-drop",
+    "note": "batch_length exceeds buffer: dropped silently",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "none"
+    },
+    "events": [],
+    "consumed": [],
+    "error": null
+  },
+  {
+    "name": "T5 v2 truncated record, length field adjusted",
+    "category": "truncation",
+    "expect": "crc-reject",
+    "note": "framing made consistent, so CRC32C runs and fails",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "T6 v2-gzip truncated payload, length adjusted",
+    "category": "truncation",
+    "expect": "crc-reject",
+    "note": "CRC32C over shortened gzip payload fails before gunzip",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 1,
+      "crc_failed": true,
+      "deserialize_calls": 0,
+      "records_consumed": 0,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 0 failed crc check"
+  },
+  {
+    "name": "A1 v2 value swapped, CRC32C recomputed",
+    "category": "tamper",
+    "expect": "accepted",
+    "note": "attacker recomputes unkeyed CRC -> consumer accepts forged value",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": false,
+      "deserialize_calls": 4,
+      "records_consumed": 2,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "DefaultRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "FORGED-payload!!"
+      ],
+      [
+        "validate_crc",
+        "DefaultRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-2"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-2"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "FORGED-payload!!"
+      ],
+      [
+        1,
+        "key-2",
+        "value-payload-2"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "A2 legacy-v1 value swapped, CRC32 recomputed",
+    "category": "tamper",
+    "expect": "accepted",
+    "note": "same for legacy CRC32",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 2,
+      "crc_failed": false,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "none"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "FORGED-payload!!"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "FORGED-payload!!"
+      ]
+    ],
+    "error": null
+  },
+  {
+    "name": "M1 legacy messageset [good, corrupt]",
+    "category": "mixed",
+    "expect": "partial-then-reject",
+    "note": "good record IS deserialized (side effect fires) before the corrupt one is rejected",
+    "check_crcs": true,
+    "ok": true,
+    "summary": {
+      "crc_checks": 3,
+      "crc_failed": true,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "CorruptRecordError"
+    },
+    "events": [
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        true
+      ],
+      [
+        "validate_crc",
+        "LegacyRecord",
+        true
+      ],
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-1"
+      ],
+      [
+        "validate_crc",
+        "LegacyRecordBatch",
+        false
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-1"
+      ]
+    ],
+    "error": "CorruptRecordError: [Error 2] CorruptRecordError: Record batch for partition TopicPartition(topic='audit-topic', partition=0) at offset 1 failed crc check"
+  },
+  {
+    "name": "C1 legacy-v1 corrupt value, check_crcs=False",
+    "category": "control",
+    "expect": "accepted",
+    "note": "with check_crcs=False the corrupt value reaches the deserializer",
+    "check_crcs": false,
+    "ok": true,
+    "summary": {
+      "crc_checks": 0,
+      "crc_failed": false,
+      "deserialize_calls": 2,
+      "records_consumed": 1,
+      "error": "none"
+    },
+    "events": [
+      [
+        "deserialize",
+        "key",
+        "key-1"
+      ],
+      [
+        "deserialize",
+        "value",
+        "value-payload-�"
+      ]
+    ],
+    "consumed": [
+      [
+        0,
+        "key-1",
+        "value-payload-�"
+      ]
+    ],
+    "error": null
+  }
+]
