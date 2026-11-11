@@ -70,6 +70,44 @@ There are many configuration options for the consumer class. See
 :class:`~kafka.KafkaConsumer` API documentation for more details.
 
 
+Safe asynchronous commits across rebalances
+--------------------------------------------
+
+``commit_async`` returns before the broker responds. If a group rebalance (or a
+coordinator failover) completes while a commit is in flight, the success
+callback can fire *after* the committed partitions have been reassigned to
+another member. The request was valid when the broker processed it, so a
+successful response for a stale generation is normal and the client does not
+tag the callback with a generation.
+
+Do not mark application work "done" unconditionally inside a
+``commit_async`` callback. Instead, snapshot the generation and assignment at
+send time and re-check them inside the callback, and use a *synchronous* commit
+from a rebalance listener's ``on_partitions_revoked`` for the final flush:
+
+.. code:: python
+
+    def guarded_commit(consumer, offsets):
+        generation = consumer.group_metadata().generation_id
+        owned = set(consumer.assignment())
+
+        def on_commit(committed, res_or_exc):
+            if isinstance(res_or_exc, Exception):
+                return  # commit failed; retry on the next loop
+            if consumer.group_metadata().generation_id != generation:
+                return  # a rebalance moved the group in the meantime
+            for tp in committed:
+                if tp not in consumer.assignment():
+                    continue  # no longer our partition
+                advance_application_state(tp, committed[tp].offset)
+
+        consumer.commit_async(offsets, callback=on_commit)
+
+A runnable version, including the revocation listener, lives in
+``examples/safe_commit_async.py``; ``test/consumer/test_coordinator.py``
+reproduces the stale-callback ordering and pins this contract.
+
+
 KafkaProducer
 ==============
 

@@ -655,6 +655,17 @@ class KafkaConsumer:
         This is an asynchronous call and will not block. Any errors encountered
         are either passed to the callback (if provided) or discarded.
 
+        Note:
+            The callback is not tied to the group generation that sent the
+            request. If a rebalance completes while the commit is in flight,
+            the callback can fire after those partitions have been reassigned
+            to another member -- possibly with a successful response, because
+            the request was valid when the broker processed it. A callback that
+            marks application work complete on success must therefore snapshot
+            the current generation (``group_metadata()``) and assignment
+            (``assignment()``) when calling this method and re-check them in
+            the callback before acting. See examples/safe_commit_async.py.
+
         Arguments:
             offsets (dict, optional): {TopicPartition: OffsetAndMetadata} dict
                 to commit with the configured group_id. Defaults to currently

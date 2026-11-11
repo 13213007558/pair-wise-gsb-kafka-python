@@ -774,6 +774,24 @@ class ConsumerCoordinator(BaseCoordinator):
                 struct. This callback can be used to trigger custom actions when
                 a commit request completes.
 
+        Generation / ownership semantics:
+            The request records the generation id and member id that are
+            stable *at send time*. The callback tuple deliberately carries no
+            generation, and the callback runs later on the IO loop with no
+            reference to the request's original generation. A rebalance (or
+            coordinator failover followed by a rejoin) can therefore complete
+            before the response arrives: the broker may still return success
+            for the stale-generation request, while the live generation and
+            assignment have already moved on. This method does not mutate the
+            subscription assignment or fetch positions from the callback
+            path, so a stale success cannot corrupt client state by itself.
+            Callbacks that drive external "work completed" state must
+            re-check current ownership (generation id via
+            :meth:`group_metadata` and the live assignment via
+            :meth:`~kafka.consumer.subscription_state.SubscriptionState.assigned_partitions`)
+            before attributing the result; see
+            examples/safe_commit_async.py for the guarded pattern.
+
         Returns:
             kafka.future.Future
         """

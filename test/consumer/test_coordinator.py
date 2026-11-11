@@ -2883,3 +2883,496 @@ def test_metadata_growth_triggers_rejoin_end_to_end(net, metrics):
         coordinator.close(timeout_ms=0)
         client.close()
         manager.close()
+
+
+# ---------------------------------------------------------------------------
+# Stale async commit callbacks across rebalances / coordinator failover
+#
+# Scenario under test: an OffsetCommitRequest is sent while the consumer owns
+# a partition in generation G; a rebalance then moves the partition (or the
+# whole coordinator) before the OffsetCommitResponse comes back; the stale
+# response finally resolves the commit future and its user callback fires.
+#
+# The kafka-python contract here:
+#   * the request records the generation/member that were current *at send
+#     time* (generation_if_stable() in _send_offset_commit_request);
+#   * the callback tuple (callback, offsets, response) carries no generation,
+#     so a late success is indistinguishable from a current-generation one;
+#   * the library never mutates assignment / fetch positions from the
+#     callback path -- cross-ownership attribution is the application's job.
+# The tests below pin each of these behaviors.
+# ---------------------------------------------------------------------------
+
+
+def _join_response_generic(generation_id, member_id='member-1', leader='leader-x'):
+    return JoinGroupResponse(
+        throttle_time_ms=0, error_code=0, generation_id=generation_id,
+        protocol_type='consumer', protocol_name='range',
+        leader=leader, member_id=member_id, members=[])
+
+
+def _sync_response_partitions(topic, partitions):
+    return SyncGroupResponse(
+        throttle_time_ms=0, error_code=0,
+        protocol_type='consumer', protocol_name='range',
+        assignment=ConsumerProtocolAssignment(
+            0, [(topic, partitions)], b'').encode())
+
+
+def _commit_success_response(topic, partitions):
+    _Topic = OffsetCommitResponse.OffsetCommitResponseTopic
+    _Partition = _Topic.OffsetCommitResponsePartition
+    return OffsetCommitResponse(
+        throttle_time_ms=0,
+        topics=[_Topic(name=topic, partitions=[
+            _Partition(partition_index=p, error_code=0) for p in partitions])])
+
+
+class _GatedCommitSend:
+    """Wrap manager.send so OffsetCommitRequest responses are held until the
+    test explicitly releases them, while every other request type flows
+    through untouched. This models a broker (or network) that delays the
+    commit response across a rebalance, without violating the connection's
+    in-flight FIFO ordering (the gated response is delivered on its own
+    future, never overtaking another response on the wire)."""
+
+    def __init__(self, manager, net, gate_count=1):
+        self._net = net
+        self._real_send = manager.send
+        self.gate_count = gate_count
+        self.sent_commits = []
+        self.gates = []
+        manager.send = self._send
+
+    def _send(self, request, node_id=None, request_timeout_ms=None):
+        if not isinstance(request, OffsetCommitRequest):
+            return self._real_send(request, node_id=node_id,
+                                   request_timeout_ms=request_timeout_ms)
+        self.sent_commits.append({
+            'generation_id': request.generation_id_or_member_epoch,
+            'member_id': request.member_id,
+            'node_id': node_id,
+            'topics': [(topic.name, [
+                (part.partition_index, part.committed_offset,
+                 part.committed_metadata)
+                for part in topic.partitions])
+                for topic in request.topics],
+        })
+        # Only the first gate_count commits are held; later commits (e.g. the
+        # synchronous pre-rebalance auto-commit fired from _on_join_prepare)
+        # pass straight through so they cannot stall a rebalance under test.
+        if len(self.sent_commits) > self.gate_count:
+            return self._real_send(request, node_id=node_id,
+                                   request_timeout_ms=request_timeout_ms)
+        wire_future = self._real_send(
+            request, node_id=node_id, request_timeout_ms=request_timeout_ms)
+        gated = self._net.create_future()
+        gate = self._net.create_future()
+        self.gates.append(gate)
+
+        async def _chain():
+            await gate
+            if wire_future.succeeded():
+                gated.success(wire_future.value)
+            else:
+                gated.failure(wire_future.exception)
+
+        self._net.call_soon(_chain())
+        return gated
+
+    def release_all(self):
+        for gate in self.gates:
+            if not gate.is_done:
+                gate.success(None)
+
+
+def _drive_until(net, condition, timeout=5.0, interval_ms=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not condition():
+        net.poll(timeout_ms=interval_ms)
+    assert condition(), 'condition not reached within %.1fs' % timeout
+
+
+@pytest.mark.parametrize('broker',
+                         [(0, 9), (0, 10, 1), (0, 11), (2, 3), (3, 5), (4, 2)],
+                         indirect=True)
+def test_stale_async_commit_callback_fires_under_new_generation(broker, net, manager, client):
+    """commit sent in gen 1 -> rebalance establishes gen 2 and revokes the
+    partition -> the gen-1 commit response returns success afterwards.
+
+    The callback must still fire exactly once with the success response, but
+    by then the live generation is 2 and the partition is no longer assigned.
+    The library must not have re-added the partition or touched any fetch
+    position: the stale success only reports the broker-side outcome."""
+    coordinator = ConsumerCoordinator(
+        client, SubscriptionState(), metrics=None,
+        api_version=broker.broker_version, enable_auto_commit=False)
+    manager.bootstrap(timeout_ms=5000)
+    topic = 'foobar'
+    tp0 = TopicPartition(topic, 0)
+    coordinator._subscription.subscribe(topics=[topic])
+    coordinator.coordinator_id = 0
+
+    try:
+        # Generation 1: own partition 0.
+        broker.respond(JoinGroupRequest, _join_response_generic(1))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, [0]))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+        assert coordinator._generation.generation_id == 1
+        assert coordinator._subscription.assigned_partitions() == {tp0}
+
+        gated = _GatedCommitSend(manager, net)
+        broker.respond_always(
+            OffsetCommitRequest, _commit_success_response(topic, [0]))
+
+        callback_events = []
+
+        def on_commit(offsets, res_or_exc):
+            callback_events.append({
+                'response': res_or_exc,
+                'generation': coordinator._generation.generation_id,
+                'assignment': set(coordinator._subscription.assigned_partitions()),
+            })
+
+        offsets = {tp0: OffsetAndMetadata(100, '', -1)}
+        future = coordinator.commit_offsets_async(offsets, callback=on_commit)
+        _drive_until(net, lambda: gated.sent_commits)
+
+        # The request captured generation 1 / member-1 and the exact offsets.
+        assert gated.sent_commits == [{
+            'generation_id': 1,
+            'member_id': 'member-1',
+            'node_id': 0,
+            'topics': [(topic, [(0, 100, '')])],
+        }]
+        assert not future.is_done
+        assert callback_events == []
+
+        # Rebalance: gen 2 revokes partition 0 (empty assignment).
+        coordinator.request_rejoin()
+        broker.respond(JoinGroupRequest, _join_response_generic(2))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, []))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+        assert coordinator._generation.generation_id == 2
+        assert coordinator._subscription.assigned_partitions() == set()
+        # Still no callback while the old response is held.
+        assert callback_events == []
+        assert len(coordinator.completed_offset_commits) == 0
+
+        # The stale (generation-1) response now returns success.
+        gated.release_all()
+        net.wait_for(future, 5000)
+        assert future.succeeded()
+        # The completion is queued, not dispatched inline: callbacks run from
+        # the next poll/commit entry point only.
+        assert len(coordinator.completed_offset_commits) == 1
+        coordinator._invoke_completed_offset_commit_callbacks()
+
+        assert len(callback_events) == 1
+        event = callback_events[0]
+        # On success _handle_offset_commit_response returns None, so the
+        # callback's response is None (exceptions arrive as the Exception).
+        # Nothing in the callback path converts or suppresses the outcome.
+        assert event['response'] is None
+        # Callback observes the *current* state, not the commit's generation.
+        assert event['generation'] == 2
+        assert event['assignment'] == set()
+
+        # Library state was not polluted by the stale success.
+        assert coordinator._subscription.assigned_partitions() == set()
+        assert not coordinator._subscription.has_valid_position(tp0)
+    finally:
+        coordinator._close_heartbeat()
+        coordinator.reset_generation()
+        coordinator.close(timeout_ms=0)
+
+
+def test_stale_async_commit_callback_after_coordinator_failover(net, metrics):
+    """Coordinator leadership moves 0 -> 1 while a commit is in flight; after
+    rediscovery and a rejoin on the new coordinator the held response finally
+    succeeds. The callback fires against the new generation and the new
+    coordinator node, proving callback context is live state rather than
+    anything pinned to the request's original coordinator."""
+    mock_cluster = MockCluster(num_brokers=2)
+    manager = KafkaConnectionManager(
+        net, bootstrap_servers=mock_cluster.bootstrap_servers(),
+        api_version=mock_cluster.broker_version, request_timeout_ms=5000)
+    mock_cluster.attach(manager)
+    client = KafkaNetClient(net=net, manager=manager)
+    coordinator = ConsumerCoordinator(
+        client, SubscriptionState(), metrics=metrics,
+        api_version=mock_cluster.broker_version,
+        enable_auto_commit=False, retry_backoff_ms=10)
+    manager.bootstrap(timeout_ms=5000)
+    topic = 'foobar'
+    tp0 = TopicPartition(topic, 0)
+    mock_cluster.set_coordinator(coordinator.group_id, 0)
+    try:
+        coordinator._subscription.subscribe(topics=[topic])
+        coordinator.coordinator_id = 0
+        coordinator._generation = Generation(1, 'member-1', 'range')
+        coordinator.state = MemberState.STABLE
+        coordinator.rejoin_needed = False
+        coordinator._subscription.assign_from_subscribed([tp0])
+
+        gated = _GatedCommitSend(manager, net)
+        # Both brokers accept commits: the old coordinator processed the
+        # request before losing leadership and answers success late.
+        for broker_id in (0, 1):
+            mock_cluster[broker_id].respond_always(
+                OffsetCommitRequest, _commit_success_response(topic, [0]))
+
+        callback_events = []
+
+        def on_commit(offsets, res_or_exc):
+            callback_events.append((
+                res_or_exc if isinstance(res_or_exc, Exception) else None,
+                coordinator._generation.generation_id,
+                coordinator.coordinator_id,
+                set(coordinator._subscription.assigned_partitions())))
+
+        future = coordinator.commit_offsets_async(
+            {tp0: OffsetAndMetadata(100, '', -1)}, callback=on_commit)
+        _drive_until(net, lambda: gated.sent_commits)
+        assert gated.sent_commits[0]['generation_id'] == 1
+        assert gated.sent_commits[0]['node_id'] == 0
+
+        # Leadership moves; client marks the old coordinator dead and
+        # rediscovers node 1.
+        mock_cluster.set_coordinator(coordinator.group_id, 1)
+        coordinator.coordinator_dead(Errors.NotCoordinatorError('leadership moved'))
+        assert coordinator._net.run(
+            coordinator.ensure_coordinator_ready_async, 5000)
+        assert coordinator.coordinator_id == 'coordinator-1'
+
+        # Rejoin under a new generation on the new coordinator.
+        mock_cluster[1].respond(
+            JoinGroupRequest, _join_response_generic(3))
+        mock_cluster[1].respond(
+            SyncGroupRequest, _sync_response_partitions(topic, [0]))
+        coordinator.request_rejoin()
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+        assert coordinator._generation.generation_id == 3
+
+        # Late success from the pre-failover request.
+        gated.release_all()
+        net.wait_for(future, 5000)
+        assert future.succeeded()
+        coordinator._invoke_completed_offset_commit_callbacks()
+
+        assert len(callback_events) == 1
+        error, generation, coordinator_node, assignment = callback_events[0]
+        assert error is None
+        assert generation == 3
+        assert coordinator_node == 'coordinator-1'
+        assert assignment == {tp0}
+    finally:
+        coordinator._close_heartbeat()
+        coordinator.reset_generation()
+        coordinator.close(timeout_ms=0)
+        client.close()
+        manager.close()
+
+
+def test_stale_async_commit_rejected_with_illegal_generation(broker, net, manager, client):
+    """The other half of the race: if the broker rejects the stale-generation
+    request with ILLEGAL_GENERATION, the response handler wraps it in
+    CommitFailedError, resets the local generation, and the error reaches the
+    user callback after the rebalance. Client state is still not mutated by
+    the callback itself -- the application just observes a failed commit."""
+    coordinator = ConsumerCoordinator(
+        client, SubscriptionState(), metrics=None,
+        api_version=broker.broker_version, enable_auto_commit=False)
+    manager.bootstrap(timeout_ms=5000)
+    topic = 'foobar'
+    tp0 = TopicPartition(topic, 0)
+    coordinator._subscription.subscribe(topics=[topic])
+    coordinator.coordinator_id = 0
+    try:
+        broker.respond(JoinGroupRequest, _join_response_generic(1))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, [0]))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+
+        gated = _GatedCommitSend(manager, net)
+        _Topic = OffsetCommitResponse.OffsetCommitResponseTopic
+        _Partition = _Topic.OffsetCommitResponsePartition
+        broker.respond_always(OffsetCommitRequest, OffsetCommitResponse(
+            throttle_time_ms=0,
+            topics=[_Topic(name=topic, partitions=[_Partition(
+                partition_index=0,
+                error_code=Errors.IllegalGenerationError.errno)])]))
+
+        callback_events = []
+
+        def on_commit(offsets, res_or_exc):
+            callback_events.append((
+                res_or_exc,
+                coordinator._generation.generation_id,
+                set(coordinator._subscription.assigned_partitions())))
+
+        future = coordinator.commit_offsets_async(
+            {tp0: OffsetAndMetadata(100, '', -1)}, callback=on_commit)
+        _drive_until(net, lambda: gated.sent_commits)
+        assert gated.sent_commits[0]['generation_id'] == 1
+
+        # Rebalance while the rejecting response is still held.
+        coordinator.request_rejoin()
+        broker.respond(JoinGroupRequest, _join_response_generic(2))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, []))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+        assert coordinator._generation.generation_id == 2
+
+        gated.release_all()
+        net.wait_for(future, 5000, raise_error=False)
+        assert future.failed()
+        coordinator._invoke_completed_offset_commit_callbacks()
+
+        assert len(callback_events) == 1
+        error, generation, assignment = callback_events[0]
+        assert isinstance(error, Errors.CommitFailedError)
+        # The IllegalGenerationError handler reset the generation again
+        # (DEFAULT_GENERATION_ID == -1) and requested a rejoin: the callback
+        # only ever sees live state, never the request's generation 1.
+        assert generation == Generation.NO_GENERATION.generation_id
+        assert coordinator.rejoin_needed is True
+        assert assignment == set()
+        assert coordinator._subscription.assigned_partitions() == set()
+    finally:
+        coordinator._close_heartbeat()
+        coordinator.reset_generation()
+        coordinator.close(timeout_ms=0)
+
+
+def test_auto_commit_records_current_generation_per_interval(broker, net, manager, client):
+    """enable_auto_commit path: each periodic commit stamps the generation
+    that is stable when the request is sent. A commit sent in gen 1 keeps
+    generation 1 on the wire even after a gen-2 rebalance completes before
+    its response is delivered; the following interval's auto commit then
+    stamps gen 2."""
+    coordinator = ConsumerCoordinator(
+        client, SubscriptionState(), metrics=None,
+        api_version=broker.broker_version, enable_auto_commit=True,
+        auto_commit_interval_ms=1000)
+    manager.bootstrap(timeout_ms=5000)
+    topic = 'foobar'
+    tp0 = TopicPartition(topic, 0)
+    coordinator._subscription.subscribe(topics=[topic])
+    coordinator.coordinator_id = 0
+    try:
+        broker.respond(JoinGroupRequest, _join_response_generic(1))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, [0]))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+        # Give the assignment a consumed position so all_consumed_offsets()
+        # includes the partition.
+        coordinator._subscription.seek(tp0, 50)
+
+        gated = _GatedCommitSend(manager, net)
+        broker.respond_always(
+            OffsetCommitRequest, _commit_success_response(topic, [0]))
+
+        # Force the first auto commit now (gen 1).
+        coordinator.next_auto_commit_deadline = 0
+        coordinator._maybe_auto_commit_offsets_async()
+        _drive_until(net, lambda: gated.sent_commits)
+        assert gated.sent_commits[0]['generation_id'] == 1
+        assert gated.sent_commits[0]['topics'] == [(topic, [(0, 50, '')])]
+        first_gate = gated.gates[0]
+
+        # Rebalance to gen 2 before the gen-1 auto-commit response returns.
+        # _on_join_prepare fires a synchronous pre-rebalance commit first; that
+        # commit is also stamped gen 1 because the new generation is not
+        # established until JoinGroup returns.
+        coordinator.request_rejoin()
+        broker.respond(JoinGroupRequest, _join_response_generic(2))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, [0]))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+        assert coordinator._generation.generation_id == 2
+        assert [c['generation_id'] for c in gated.sent_commits] == [1, 1]
+
+        # Release the stale gen-1 response; its auto-commit callback is the
+        # library default wrapper, which only logs.
+        first_gate.success(None)
+        _drive_until(net, lambda: len(coordinator.completed_offset_commits) >= 1)
+        coordinator._invoke_completed_offset_commit_callbacks()
+
+        # The next periodic auto commit stamps generation 2.
+        coordinator.next_auto_commit_deadline = 0
+        coordinator._maybe_auto_commit_offsets_async()
+        _drive_until(net, lambda: max(c['generation_id'] for c in gated.sent_commits) >= 2)
+        generations = [c['generation_id'] for c in gated.sent_commits]
+        assert generations == [1, 1, 2]
+        assert gated.sent_commits[-1]['topics'] == [(topic, [(0, 50, '')])]
+        gated.release_all()
+        _drive_until(net, lambda: all(g.is_done for g in gated.gates))
+    finally:
+        coordinator._close_heartbeat()
+        coordinator.reset_generation()
+        coordinator.close(timeout_ms=0)
+
+
+def test_ownership_check_drops_stale_commit_callback(broker, net, manager, client):
+    """Correct application pattern: snapshot the owned partitions at commit
+    time and re-check ownership in the callback using the live assignment.
+    A success callback for a partition that has since been revoked must not
+    mark the new owner's unprocessed work complete. This pins the recommended
+    guard as executable behavior on top of the unchanged library contract."""
+    coordinator = ConsumerCoordinator(
+        client, SubscriptionState(), metrics=None,
+        api_version=broker.broker_version, enable_auto_commit=False)
+    manager.bootstrap(timeout_ms=5000)
+    topic = 'foobar'
+    tp0 = TopicPartition(topic, 0)
+    coordinator._subscription.subscribe(topics=[topic])
+    coordinator.coordinator_id = 0
+
+    # Application-side work registry: partition -> highest offset marked done.
+    marked_done = {}
+
+    def safe_commit(offsets):
+        # Snapshot ownership at send time; the callback closes over this set.
+        owned = set(coordinator._subscription.assigned_partitions())
+        generation = coordinator._generation.generation_id
+
+        def on_commit(committed, res_or_exc):
+            if isinstance(res_or_exc, Exception):
+                return
+            current = coordinator._subscription.assigned_partitions()
+            for tp in committed:
+                # Only attribute the result if the same generation still owns
+                # this partition; otherwise a different member owns it now.
+                if (coordinator._generation.generation_id == generation
+                        and tp in owned and tp in current):
+                    marked_done[tp] = committed[tp].offset
+
+        return coordinator.commit_offsets_async(offsets, callback=on_commit)
+
+    try:
+        broker.respond(JoinGroupRequest, _join_response_generic(1))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, [0]))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+
+        gated = _GatedCommitSend(manager, net)
+        broker.respond_always(
+            OffsetCommitRequest, _commit_success_response(topic, [0]))
+
+        future = safe_commit({tp0: OffsetAndMetadata(100, '', -1)})
+        _drive_until(net, lambda: gated.sent_commits)
+
+        # Rebalance revokes the partition before the response arrives.
+        coordinator.request_rejoin()
+        broker.respond(JoinGroupRequest, _join_response_generic(2))
+        broker.respond(SyncGroupRequest, _sync_response_partitions(topic, []))
+        assert coordinator._net.run(coordinator.join_group_async, 5000)
+
+        gated.release_all()
+        net.wait_for(future, 5000)
+        coordinator._invoke_completed_offset_commit_callbacks()
+
+        # The broker-side commit succeeded, but the application refuses to
+        # attribute that success across the ownership boundary.
+        assert marked_done == {}
+        assert coordinator._subscription.assigned_partitions() == set()
+    finally:
+        coordinator._close_heartbeat()
+        coordinator.reset_generation()
+        coordinator.close(timeout_ms=0)
