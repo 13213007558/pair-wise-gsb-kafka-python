@@ -300,7 +300,9 @@ class StructField(BaseField):
         ctx.emit(indent, '    for _tk, _tv in _tfd.items():')
         ctx.emit(indent, '        if _tk.startswith("_"):')
         ctx.emit(indent, '            if %s.unknown_tags is None: %s.unknown_tags = {}' % (var_name, var_name))
-        ctx.emit(indent, '            %s.unknown_tags[_tk] = _tv' % var_name)
+        # _tv is a RawTaggedField for retained tags; keep its raw payload bytes
+        # so the codegen and reference decode paths produce identical objects.
+        ctx.emit(indent, '            %s.unknown_tags[_tk] = _tv.data if hasattr(_tv, "data") else _tv' % var_name)
         ctx.emit(indent, '        else:')
         ctx.emit(indent, '            if %s.tags is None: %s.tags = set()' % (var_name, var_name))
         ctx.emit(indent, '            %s.tags.add(_tk)' % var_name)

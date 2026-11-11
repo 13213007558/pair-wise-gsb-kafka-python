@@ -104,7 +104,15 @@ class StructArrayField(ArrayField):
             ctx.emit(indent, '    pos += 4')
         guard = indent + '    '
         item_var = ctx.next_var('si')
-        if len(fields) == 1:
+        # A true single-field struct serializes one value at this version and
+        # has no tagged section, so callers may pass bare scalars (e.g.
+        # ['topic-a']). A struct with one untagged field plus tagged fields
+        # still carries a full object, so it takes the multi-field path.
+        # Fields gated out of this version (e.g. added in a later version) do
+        # not count: they neither serialize nor carry tags here.
+        active_tagged = [field for field in inner_struct._fields
+                         if field.for_version_q(version) and field.tagged_field_q(version)]
+        if len(fields) == 1 and not active_tagged:
             # Single-field struct: items may be scalars (str, int, etc.)
             ctx.emit(guard, 'for %s in %s:' % (item_var, val_expr))
             scalar_indent = guard + '    '

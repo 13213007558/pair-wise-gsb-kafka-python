@@ -1,5 +1,9 @@
 from kafka.util import classproperty
 
+from .schemas.fields.codecs import (
+    RawTaggedField, TaggedFieldError, parse_unknown_tag_key, unknown_tag_key,
+)
+
 
 class SlotsBuilder(type):
     def __new__(metacls, name, bases, attrs, **kw):
@@ -55,8 +59,70 @@ class DataContainer(metaclass=SlotsBuilder):
                 if self.unknown_tags is None:
                     self.unknown_tags = {}
                 self.unknown_tags[name] = field_vals.pop(name)
+        # Explicit lossless-retention hook: unknown_tags={'_7': b'...'} or a
+        # mapping of {tag: raw_bytes}. Values are normalized to RawTaggedField.
+        retained = field_vals.pop('unknown_tags', None)
+        if retained:
+            for key, val in retained.items():
+                if isinstance(key, int):
+                    tag = key
+                else:
+                    tag = parse_unknown_tag_key(key)
+                if tag is None:
+                    raise ValueError(
+                        'Unknown-tag keys must be non-negative ints or "_<tag>" strings: %r' % key)
+                self.add_unknown_tag(tag, val)
         if field_vals:
             raise ValueError('Unrecognized fields for type %s: %s' % (self._struct.name, field_vals))
+
+    def _known_tag_ids(self):
+        """Tag ids explained by the schema for this container's version."""
+        if self._version is None:
+            return {field.tag for field in self._struct._fields if field.tag is not None}
+        return {field.tag for field in self._struct._fields
+                if field.tagged_field_q(self._version)}
+
+    def add_unknown_tag(self, tag, data):
+        """Attach an opaque tagged field that this schema does not explain.
+
+        ``data`` is raw payload bytes (or a :class:`RawTaggedField`); it is
+        stored unparsed and re-emitted byte-for-byte on the next encode. A tag
+        already explained by the schema is rejected so an unknown value can
+        never shadow an interpreted field.
+        """
+        if not isinstance(tag, int) or tag < 0:
+            raise TaggedFieldError(
+                'Unknown tag must be a non-negative integer, got %r' % (tag,))
+        if tag in self._known_tag_ids():
+            raise TaggedFieldError(
+                'Tag %d is already defined by schema %s; refusing to overwrite '
+                'an interpreted field with retained bytes' % (tag, self._struct.name))
+        raw = data if isinstance(data, RawTaggedField) else RawTaggedField(tag, data)
+        if raw.tag != tag:
+            raise TaggedFieldError(
+                'RawTaggedField tag %d does not match requested tag %d' % (raw.tag, tag))
+        if self.unknown_tags is None:
+            self.unknown_tags = {}
+        self.unknown_tags[unknown_tag_key(tag)] = raw
+        return raw
+
+    def get_unknown_tag(self, tag):
+        """Return the retained :class:`RawTaggedField` for ``tag`` or None."""
+        if self.unknown_tags is None:
+            return None
+        raw = self.unknown_tags.get(unknown_tag_key(tag))
+        if raw is None or isinstance(raw, RawTaggedField):
+            return raw
+        # Decode stores bare payload bytes (kept for dict-style backward
+        # compatibility); normalize on read so the public type is stable.
+        return RawTaggedField(tag, raw)
+
+    def unknown_tag_ids(self):
+        """Sorted numeric ids of every retained (uninterpreted) tagged field."""
+        if not self.unknown_tags:
+            return ()
+        return tuple(sorted(parse_unknown_tag_key(name)
+                            for name in self.unknown_tags))
 
     def __getattr__(self, name):
         # Only called when normal slot lookup fails (field not set).
